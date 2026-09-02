@@ -1,4 +1,4 @@
-// カレンダー変化監視ボット
+// カレンダー監視ボット(募集=黄色のみ検知)
 import { chromium } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -13,7 +13,6 @@ const SITE = {
   monthViewSel:'text=Maand',
   nextBtnSel:  "a[id$='_btnNext']",
   prevBtnSel:  "a[id$='_btnPrev']",
-  dayCellSel:  '.monthdayemp',
 };
 
 const CFG = {
@@ -98,27 +97,25 @@ async function readMonthText(page) {
   });
 }
 
+// この月の「予定枠」を種類つきで取る:
+//   final あり = 自分の確定(緑) / final なし = 募集(黄色)とみなす
 async function scanMonth(page) {
-  return await page.evaluate((sel) => {
+  return await page.evaluate(() => {
     const monthEl = document.querySelector('div[onclick*="showquicknavigation"]');
     const monthText = monthEl ? monthEl.innerText.trim() : '';
-    const seenCells = new Set();
-    const cells = [];
-    for (const el of document.querySelectorAll(sel)) {
-      const header = el.querySelector('.day_header');
-      if (!header) continue;
-      const day = header.innerText.trim().split('|')[0].trim();
-      if (!day || seenCells.has(day)) continue;
-      seenCells.add(day);
-      const all = (el.innerText || '').replace(/\s+/g, ' ').trim();
-      const body = all.replace(header.innerText.replace(/\s+/g, ' ').trim(), '').trim();
-      if (body) cells.push({ month: monthText, day, body }); // 予定が入っている日だけ
+    const items = [];
+    for (const el of document.querySelectorAll('.dayitem')) {
+      const cell = el.closest('.monthdayemp');
+      const header = cell ? cell.querySelector('.day_header') : null;
+      const day = header ? header.innerText.trim().split('|')[0].trim() : '';
+      const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+      const isMine = /\bfinal\b/.test(el.className);
+      items.push({ month: monthText, day, text, isMine });
     }
-    return { monthText, cells };
-  }, SITE.dayCellSel);
+    return { monthText, items };
+  });
 }
 
-// 「月の表示が変わるまで」確認しながら次の月へ進む
 async function gotoNextMonth(page, prevMonthText) {
   await page.locator(SITE.nextBtnSel).first().click({ timeout: 5000 });
   for (let i = 0; i < 20; i++) {
@@ -137,8 +134,9 @@ async function sweepMonths(page) {
   for (let i = 0; i <= CFG.monthsAhead; i++) {
     const r = await scanMonth(page);
     monthsSeen.push(r.monthText);
-    for (const c of r.cells) found.push(c);
-    log(`  ${r.monthText}: 予定あり${r.cells.length}日`);
+    for (const it of r.items) found.push(it);
+    const open = r.items.filter(x => !x.isMine).length;
+    log(`  ${r.monthText}: 予定${r.items.length}件 / うち募集${open}件`);
     if (i < CFG.monthsAhead) monthText = await gotoNextMonth(page, monthText);
   }
   const distinct = new Set(monthsSeen).size;
@@ -160,32 +158,29 @@ async function collect(browser) {
 }
 
 async function runCheckCycle(found) {
+  // 募集(黄色=finalなし)だけを対象にする
+  const opens = found.filter(x => !x.isMine);
   const prev = loadPrev();
-  const current = new Set(found.map(c => hash(`${c.month}|${c.day}|${c.body}`)));
+  const current = new Set(opens.map(x => hash(`${x.month}|${x.day}|${x.text}`)));
 
-  if (prev.size === 0) {
-    saveCurrent(current);
-    log(`初回: 予定あり${found.length}日を基準として記録(通知なし)`);
-    return;
-  }
-
-  const fresh = found.filter(c => !prev.has(hash(`${c.month}|${c.day}|${c.body}`)));
+  const fresh = opens.filter(x => !prev.has(hash(`${x.month}|${x.day}|${x.text}`)));
   saveCurrent(current);
 
   if (fresh.length) {
-    const days = [...new Set(fresh.map(c => `${c.month} ${c.day}`))];
-    await lineNotify('📢 スケジュールに変化あり\n' + days.map(d => `・${d}`).join('\n'));
+    const lines = [...new Set(fresh.map(x => `・${x.month} ${x.day}：${x.text}`))];
+    await lineNotify('🟡 募集が出ました！\n' + lines.join('\n') + '\n→ 早い者勝ち。急いで確認を。');
   } else {
-    log('変化なし');
+    log(`募集の新規なし(現在${opens.length}件)`);
   }
 }
 
 async function heartbeat(browser) {
   const found = await collect(browser);
+  const opens = found.filter(x => !x.isMine).length;
   await lineNotify(
     `✅ 監視は正常に動いています\n` +
     `・${CFG.monthsAhead + 1}ヶ月分をチェック中\n` +
-    `・予定が入っている日：${found.length}日`,
+    `・自分の予定：${found.length - opens}件 / 募集中：${opens}件`,
     CFG.heartbeatTo
   );
 }
