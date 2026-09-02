@@ -31,11 +31,11 @@ const SEEN_FILE = path.join(CFG.dataDir, 'seen.json');
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const hash = (s) => crypto.createHash('sha256').update(s).digest('hex').slice(0, 32);
 
-function loadSeen() {
+function loadPrev() {
   try { return new Set(JSON.parse(fs.readFileSync(SEEN_FILE, 'utf8'))); }
   catch { return new Set(); }
 }
-function saveSeen(set) { fs.writeFileSync(SEEN_FILE, JSON.stringify([...set])); }
+function saveCurrent(set) { fs.writeFileSync(SEEN_FILE, JSON.stringify([...set])); }
 
 async function lineNotify(text, toList) {
   if (!CFG.lineToken) { log('[LINE未設定]'); return; }
@@ -149,21 +149,26 @@ async function collect(browser) {
   }
 }
 
-async function runCheckCycle(found, seen) {
+async function runCheckCycle(found) {
   if (!found.length) throw new Error('カレンダーを読めませんでした');
-  const firstRun = seen.size === 0;
-  const fresh = [];
-  for (const c of found) {
-    const key = hash(`${c.month}|${c.day}|${c.body}`);
-    if (!seen.has(key)) { seen.add(key); fresh.push(c); }
+  const prev = loadPrev();
+  const current = new Set(found.map(c => hash(`${c.month}|${c.day}|${c.body}`)));
+
+  // 取得が不完全な回（前回より大幅にマスが少ない）は誤報の元なので中断
+  if (prev.size > 0 && current.size < prev.size * 0.8) {
+    throw new Error(`取得が不完全の疑い(今回${current.size}件/前回${prev.size}件)`);
   }
-  if (firstRun) {
-    saveSeen(seen);
+
+  if (prev.size === 0) {
+    saveCurrent(current);
     log(`初回: ${found.length}マスを基準として記録(通知なし)`);
     return;
   }
+
+  const fresh = found.filter(c => !prev.has(hash(`${c.month}|${c.day}|${c.body}`)));
+  saveCurrent(current);
+
   if (fresh.length) {
-    saveSeen(seen);
     const days = [...new Set(fresh.map(c => `${c.month} ${c.day}`))];
     await lineNotify('📢 スケジュールに変化あり\n' + days.map(d => `・${d}`).join('\n'));
   } else {
@@ -196,7 +201,7 @@ async function main() {
   const browser = await chromium.launch({ headless: CFG.headless });
   try {
     if (mode === 'heartbeat') { await heartbeat(browser); return; }
-    await runCheckCycle(await collect(browser), loadSeen());
+    await runCheckCycle(await collect(browser));
   } finally {
     await browser.close();
   }
