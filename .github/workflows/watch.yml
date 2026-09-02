@@ -1,0 +1,46 @@
+name: watch
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: install deps
+        run: npm install
+      - name: install chromium
+        run: npx playwright install --with-deps chromium
+      - name: run check
+        env:
+          PM_URL: ${{ secrets.PM_URL }}
+          PM_USER: ${{ secrets.PM_USER }}
+          PM_PASS: ${{ secrets.PM_PASS }}
+          LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
+          LINE_TO: ${{ secrets.LINE_TO }}
+          LINE_TO_HEARTBEAT: ${{ secrets.LINE_TO_HEARTBEAT }}
+          PM_HEADLESS: 'true'
+          PM_MONTHS_AHEAD: '14'
+        run: node monitor.mjs ${{ github.event.schedule == '0 7 * * *' && '--heartbeat' || '--once' }}
+      - name: save state
+        run: |
+          git config user.name "bot"
+          git config user.email "bot@users.noreply.github.com"
+          git pull --rebase || true
+          git add -f seen.json || true
+          git diff --cached --quiet || (git commit -m "update state" && git push)
