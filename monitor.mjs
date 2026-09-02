@@ -12,7 +12,6 @@ const SITE = {
   submitSel:   'input[type="submit"][value*="Log" i], button[type="submit"]',
   monthViewSel:'text=Maand',
   nextBtnSel:  "a[id$='_btnNext']",
-  prevBtnSel:  "a[id$='_btnPrev']",
 };
 
 const CFG = {
@@ -97,8 +96,8 @@ async function readMonthText(page) {
   });
 }
 
-// この月の「予定枠」を種類つきで取る:
-//   final あり = 自分の確定(緑) / final なし = 募集(黄色)とみなす
+// 全日付マスを見て、マスに現れた箱を種類つきで拾う
+// final印あり = 依頼者の確定(緑) / final印なし = 募集(黄色)
 async function scanMonth(page) {
   return await page.evaluate(() => {
     const monthEl = document.querySelector('div[onclick*="showquicknavigation"]');
@@ -158,8 +157,7 @@ async function collect(browser) {
 }
 
 async function runCheckCycle(found) {
-  // 募集(黄色=finalなし)だけを対象にする
-  const opens = found.filter(x => !x.isMine);
+  const opens = found.filter(x => !x.isMine); // 黄色だけ
   const prev = loadPrev();
   const current = new Set(opens.map(x => hash(`${x.month}|${x.day}|${x.text}`)));
 
@@ -167,8 +165,8 @@ async function runCheckCycle(found) {
   saveCurrent(current);
 
   if (fresh.length) {
-    const lines = [...new Set(fresh.map(x => `・${x.month} ${x.day}：${x.text}`))];
-    await lineNotify('🟡 募集が出ました！\n' + lines.join('\n') + '\n→ 早い者勝ち。急いで確認を。');
+    const days = [...new Set(fresh.map(x => `${x.month} ${x.day}`))];
+    await lineNotify('📢 スケジュールに変化あり\n' + days.map(d => `・${d}`).join('\n'));
   } else {
     log(`募集の新規なし(現在${opens.length}件)`);
   }
@@ -204,4 +202,9 @@ async function main() {
   }
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+main().catch(async (e) => {
+  console.error(e);
+  // 黙って死なない: 読めなかったことをLINEで知らせる
+  try { await lineNotify('⚠️ 巡回でエラーが発生し、この回は読めませんでした。続く場合は要確認。', CFG.heartbeatTo); } catch {}
+  process.exit(1);
+});
